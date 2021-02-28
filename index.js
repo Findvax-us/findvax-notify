@@ -1,11 +1,18 @@
 const secrets = require('./secrets.js');
 const AWS = require('aws-sdk');
 
+const msgTemplate = {
+  en: {
+    start: 'Findvax.us found available slots:\n\n',
+    end: '\n\nWe\'ll stop notifying you for these locations now. Re-subscribe on the site if needed.'
+  }
+};
+
 const handleAPIRequest = (event, successHandler, failureHandler) => {
   const db = new AWS.DynamoDB.DocumentClient({apiVersion: '2012-08-10'});
 
   const validateUUID = /^[0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}$/;
-  const requiredFields = ['location', 'sms'];
+  const requiredFields = ['location', 'sms', 'lang'];
   let body;
   
   if(!event || !event.body || !event.body.trim().length > 0){
@@ -24,6 +31,7 @@ const handleAPIRequest = (event, successHandler, failureHandler) => {
   })
 
   const location = body.location,
+        lang = body.lang,
         sms = '+1' + body.sms.replace(/\D/g, '');
 
   if(!validateUUID.test(location)){
@@ -32,14 +40,17 @@ const handleAPIRequest = (event, successHandler, failureHandler) => {
   if(!sms.length === 12){
     throw 'Invalid US phone number!';
   }
+  if(!typeof lang === "string" && !lang.length == 2){
+    throw 'Invalid language id (must be a two char string without localization like "en" or "fr")!';
+  }
 
   let params = {
     TableName: 'notify',
     Item: {
       location: location,
       isSent: 0,
-      sms: sms
-      //TODO: lang
+      sms: sms,
+      lang: lang
     }
   };
 
@@ -90,11 +101,26 @@ const getAvailabilityData = (event) => {
               foundAvailability.times &&
               foundAvailability.times.length > 0){
 
-            locationDetail = {
-              uuid: location.uuid,
-              name: location.name,
-              url: location.linkUrl
-            };
+            let timeslots = foundAvailability.times.reduce((acc, avail) => {
+              if(avail.slots === null){
+                // since we don't have a specific count for this time slot, just use
+                // an arbitrary large number to ensure it's above any threshold
+                return acc + 100; 
+              }
+
+              return acc + avail.slots;
+            });
+
+            // if we dont have more slots than this location's threshold.
+            // prevents sending an sms for 1 slot that was gone 45 seconds
+            // before this script even got triggered.
+            if(!location.notificationThreshold || timeslots > location.notificationThreshold){
+              locationDetail = {
+                uuid: location.uuid,
+                name: location.name,
+                url: location.linkUrl
+              };  
+            }
           }
 
           return locationDetail;
@@ -117,7 +143,7 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
 
       const params = {
         TableName: 'notify',
-        ProjectionExpression: '#loc, #st, sms',
+        ProjectionExpression: '#loc, #st, sms, lang',
         KeyConditionExpression: '#loc = :id and #st = :no',
         ExpressionAttributeNames: {
           '#loc': 'location',
@@ -132,9 +158,9 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
       const queryPromise = db.query(params).promise().then(data => {
         data.Items.forEach(noti => {
           if(!Object.keys(notisToSend).includes(noti.sms)){
-            notisToSend[noti.sms] = [];
+            notisToSend[noti.sms] = {lang: noti.lang, locations: []};
           }
-          notisToSend[noti.sms].push({"name": location.name, "link": location.url});
+          notisToSend[noti.sms].locations.push({name: location.name, link: location.url});
         }); 
       }).catch(err => {
         failureHandler(err);
@@ -148,10 +174,16 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
     let smsQ = [];
 
     for(const [sms, details] of Object.entries(notisToSend)){
-      let msg = details.reduce((msg, next) => {
+      let lang = details.lang || 'en';
+      if(!Object.keys(msgTemplate).includes(lang)){
+        console.log(`Unrecognized lang id: '${lang}', defaulting to 'en'`);
+        lang = 'en';
+      }
+
+      let msg = details.locations.reduce((msg, next) => {
         return msg + `${next.name}: ${next.link}\n`;
-      }, 'Findvax.us found available slots:\n\n');
-      msg += '\n\nWe\'ll stop notifying you for these locations now. Re-subscribe on the site if needed.';
+      }, msgTemplate[lang].start);
+      msg += msgTemplate[lang].end;
     
       const msgParams = {
         ApplicationId: secrets.applicationId,

@@ -14,7 +14,8 @@ Notification requests are stored in DynamoDB as simple objects:
 {
   location: String, UUID of the location to notify about (PK),
   isSent: Number, 0 for not yet sent, 1 for sent (currently not used),
-  sms: String, phone number to which we send notification SMS (format: "5555555555", "+1" country code is prepended in the function)
+  sms: String, phone number to which we send notification SMS (format: "5555555555", "+1" country code is prepended in the function),
+  lang: String, two char language identifier for message templates, defaults to 'en' if not recognized as an available template
 }
 ````
 
@@ -30,11 +31,12 @@ To notify, it reads the availability.json from S3, collects any locations with f
 
 Once we successfully send notifications, we delete all the matching items.
 
+Uses the `location.json` item's `notificationThreshold` as the minimum required found slots per location to trigger a notification. Some sites will randomly have single slots available, but due to the time it takes to scrape, process, send notifications, etc, it's gone already and this is effectively useless.
+
 It doesn't run locally because I didn't put any work into a demo setup, oops.
 
 ### TODO
 
 - Link shortener: either find an API or build our own, or (most likely) just edit locations.json so `linkUrl` is always a shortlink
 - Handle states: scraper should pass along which state it just scraped, so notifier can use that to pick the correct availability.json
-- Handle language: site should include `lang` code in the payload, which we can use to select a template for the SMS string
 - Error handling: definitely a few cases where promises don't get resolved and we log nothing, need to clean up
