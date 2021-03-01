@@ -1,6 +1,12 @@
 const secrets = require('./secrets.js');
 const AWS = require('aws-sdk');
 
+const responseHeaders = {
+  'Access-Control-Allow-Headers' : 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'OPTIONS,PUT'
+};
+
 const msgTemplate = {
   en: {
     start: 'Findvax.us found available slots:\n\n',
@@ -248,7 +254,7 @@ exports.handler = (event, context, callback) => {
     rb(null, {
       isBase64Encoded: false,
       statusCode: 200,
-      headers: {},
+      headers: responseHeaders,
       multiValueHeaders: {},
       body: ""
     });
@@ -277,7 +283,7 @@ exports.handler = (event, context, callback) => {
     rb(null, {
       isBase64Encoded: false,
       statusCode: statusCode,
-      headers: {},
+      headers: responseHeaders,
       multiValueHeaders: {},
       body: errorBody
     });
