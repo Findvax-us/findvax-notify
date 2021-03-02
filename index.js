@@ -114,8 +114,8 @@ const getAvailabilityData = (event) => {
                 return acc + 100; 
               }
 
-              return acc + avail.slots;
-            });
+              return acc + parseInt(avail.slots);
+            }, 0);
 
             // if we dont have more slots than this location's threshold.
             // prevents sending an sms for 1 slot that was gone 45 seconds
