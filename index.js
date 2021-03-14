@@ -209,38 +209,38 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
         }
       };
       smsQ.push(pinpoint.sendMessages(msgParams).promise());
-
-      return Promise.all(smsQ).then(() => {
-        let deleteQ = [];
-
-        locations.forEach(location => {
-          if(location){
-
-            const params = {
-              TableName: 'notify',
-              Key:{
-                  'location': location.uuid,
-                  'isSent': 0
-              }
-            };
-
-            const deletePromise = db.delete(params).promise();
-            deleteQ.push(deletePromise);
-
-            return Promise.all(deleteQ).then(() => {
-
-              successHandler();
-
-            }).catch(err => {
-              failureHandler(err);
-            });
-          }
-        });
-
-      }).catch(err => {
-        failureHandler(err);
-      });
     }
+
+    return Promise.all(smsQ).then(() => {
+      let deleteQ = [];
+
+      locations.forEach(location => {
+        if(location){
+
+          const params = {
+            TableName: 'notify',
+            Key:{
+                'location': location.uuid,
+                'isSent': 0
+            }
+          };
+
+          const deletePromise = db.delete(params).promise();
+          deleteQ.push(deletePromise);
+
+          return Promise.all(deleteQ).then(() => {
+
+            successHandler();
+
+          }).catch(err => {
+            failureHandler(err);
+          });
+        }
+      });
+
+    }).catch(err => {
+      failureHandler(err);
+    });
 
   }).catch(err => {
     failureHandler(err);
