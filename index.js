@@ -176,7 +176,8 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
   });
 
   return Promise.all(q).then(() => {
-    let smsQ = [];
+    let smsQ = [],
+        smsCount = 0;
 
     for(const [sms, details] of Object.entries(notisToSend)){
       let lang = details.lang || 'en';
@@ -208,9 +209,12 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
         }
       };
       smsQ.push(pinpoint.sendMessages(msgParams).promise());
+      smsCount++;
     }
 
     return Promise.all(smsQ).then(() => {
+      console.log(`Sent ${smsCount} notifications.`);
+
       let deleteQ = [];
 
       locations.forEach(location => {
@@ -227,8 +231,8 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
           const deletePromise = db.delete(params).promise();
           deleteQ.push(deletePromise);
 
-          return Promise.all(deleteQ).then(() => {
-
+          return Promise.all(deleteQ).then((res) => {
+            console.log(`Removed db entries.`, res);
             successHandler();
 
           }).catch(err => {
@@ -294,16 +298,19 @@ exports.handler = (event, context, callback) => {
     if(event.httpMethod){
       // this was triggered by API Gateway
       handleAPIRequest(event, win, die);
-    }else if(event.requestPayload){
+    }else if(event.responsePayload){
       // this was triggered by the previous lambda
-      if(!event.state){
+      if(!event.responsePayload.state){
         throw 'Missing state param!';
       }
-      if(event.state === 'none'){
+      if(event.requestPayload.init && event.responsePayload.state === 'none'){
+        context.callbackWaitsForEmptyEventLoop = false;
         // special case to skip doing anything when this was triggered by the scraper init job
+        console.log('init, exiting.');
         win();
       }
-      getAvailabilityData(event.state).then(data => sendNotifications(data, win, die));
+      console.log(`Checking for ${event.responsePayload.state}`);
+      getAvailabilityData(event.responsePayload.state).then(data => sendNotifications(data, win, die));
     }else{
       throw 'Unknown trigger! I dunno how to handle this!';
     }
