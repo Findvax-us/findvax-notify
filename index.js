@@ -72,17 +72,16 @@ const handleAPIRequest = (event, successHandler, failureHandler) => {
 
 }
 
-const getAvailabilityData = (event) => {
+const getAvailabilityData = (state) => {
   const s3 = new AWS.S3({apiVersion: '2006-03-01'});
 
   const availabilityParams = {
     Bucket: 'findvax-data',
-    Key: 'MA/availability.json' // TODO: states lol:
-    // get availability.json path from the event, passed in from scrape
+    Key: `${state}/availability.json`
   },
         locationsParams = {
     Bucket: 'findvax-data',
-    Key: 'MA/locations.json' // TODO: states lol
+    Key: `${state}/locations.json`
   };
 
   let loadedData = {},
@@ -297,7 +296,14 @@ exports.handler = (event, context, callback) => {
       handleAPIRequest(event, win, die);
     }else if(event.requestPayload){
       // this was triggered by the previous lambda
-      getAvailabilityData(event).then(data => sendNotifications(data, win, die));
+      if(!event.state){
+        throw 'Missing state param!';
+      }
+      if(event.state === 'none'){
+        // special case to skip doing anything when this was triggered by the scraper init job
+        win();
+      }
+      getAvailabilityData(event.state).then(data => sendNotifications(data, win, die));
     }else{
       throw 'Unknown trigger! I dunno how to handle this!';
     }
