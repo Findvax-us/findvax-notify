@@ -1,6 +1,8 @@
 const secrets = require('./secrets.js');
 const AWS = require('aws-sdk');
 
+const util = require('util');
+
 const responseHeaders = {
   'Access-Control-Allow-Headers' : 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
   'Access-Control-Allow-Origin': '*',
@@ -90,9 +92,19 @@ const getAvailabilityData = (state) => {
   return Promise.all([
     s3.getObject(availabilityParams).promise().then(data => {
       loadedData.availability = JSON.parse(data.Body.toString('utf-8'));
+    }).catch(err => {
+      console.error(`can't load availability.json:`);
+      console.error(util.inspect(availabilityParams, false, 5));
+      console.error(util.inspect(err, false, 5));
+      throw err;
     }),
     s3.getObject(locationsParams).promise().then(data => {
       loadedData.locations = JSON.parse(data.Body.toString('utf-8'));
+    }).catch(err => {
+      console.error(`can't load locations.json:`);
+      console.error(util.inspect(locationsParams, false, 5));
+      console.error(util.inspect(err, false, 5));
+      throw err;
     })
   ]).then(() => {
     if((loadedData.locations && loadedData.locations.length > 0) ||
@@ -100,7 +112,7 @@ const getAvailabilityData = (state) => {
         
         locationAvailability = loadedData.locations.map((location) => {
           let locationDetail = null;
-          const foundAvailability = loadedData.availability.find(avail => avail.location && avail.location === location.uuid) || null;
+          const foundAvailability = loadedData.availability.find(avail => avail && avail.location && avail.location === location.uuid) || null;
         
           if (foundAvailability &&
               foundAvailability.times &&
@@ -165,7 +177,7 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
           if(!Object.keys(notisToSend).includes(noti.sms)){
             notisToSend[noti.sms] = {lang: noti.lang, locations: []};
           }
-          notisToSend[noti.sms].locations.push({name: location.name, link: location.url});
+          notisToSend[noti.sms].locations.push({name: location.name, link: location.url, uuid: location.uuid});
         }); 
       }).catch(err => {
         failureHandler(err);
@@ -177,9 +189,14 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
 
   return Promise.all(q).then(() => {
     let smsQ = [],
-        smsCount = 0;
+        msgCounter = 0;
+
+    console.log(`Sending ${Object.keys(notisToSend).length} notifications:`);
+    console.log(util.inspect(notisToSend, false, 5));
 
     for(const [sms, details] of Object.entries(notisToSend)){
+      notisToSend[sms]['status'] = 'unsent';
+
       let lang = details.lang || 'en';
       if(!Object.keys(msgTemplate).includes(lang)){
         console.log(`Unrecognized lang id: '${lang}', defaulting to 'en'`);
@@ -208,38 +225,69 @@ const sendNotifications = (locations, successHandler, failureHandler) => {
           }
         }
       };
-      smsQ.push(pinpoint.sendMessages(msgParams).promise());
-      smsCount++;
+
+      notisToSend[sms]['status'] = 'pending';
+
+      smsQ.push(pinpoint.sendMessages(msgParams).promise().then(data => {
+        console.log("Message sent:");
+        console.log(util.inspect(data, false, 5));
+        msgCounter++;
+
+        let sms = Object.keys(data.MessageResponse.Result)[0];
+        notisToSend[sms]['status'] = 'success';
+      }).catch(err => {
+        console.error("Message failed sending:");
+        console.error(util.inspect(err, false, 5));
+        throw err;
+      }));
     }
 
     return Promise.all(smsQ).then(() => {
-      console.log(`Sent ${smsCount} notifications.`);
+      if(msgCounter > 0){
+        let deleteQ = [];
 
-      let deleteQ = [];
+        console.log(`Sent ${msgCounter} messages.`);
+        for(const [sms, details] of Object.entries(notisToSend)){
+          if(details.status === 'success'){
+            details.locations.forEach(location => {
+  
+              const params = {
+                TableName: 'notify',
+                Key:{
+                    'location': location.uuid,
+                    'isSent': 0
+                },
+                ConditionExpression:"sms = :val",
+                ExpressionAttributeValues: {
+                    ":val": sms
+                }
+              };
+    
+              console.log('queued item for deletion:');
+              console.log(params);
+              const deletePromise = db.delete(params).promise().then(res => {
+                console.log('deleted item successfully:');
+                console.log(util.inspect(res, false, 5));
+              });
+              deleteQ.push(deletePromise);
+            });
+          }else{
+            console.error(`non-success status for ${sms}:`);
+            console.error(util.inspect(details, false, 5));
+          }
+        };
 
-      locations.forEach(location => {
-        if(location){
-
-          const params = {
-            TableName: 'notify',
-            Key:{
-                'location': location.uuid,
-                'isSent': 0
-            }
-          };
-
-          const deletePromise = db.delete(params).promise();
-          deleteQ.push(deletePromise);
-
-          return Promise.all(deleteQ).then((res) => {
-            console.log(`Removed db entries.`, res);
+        return Promise.all(deleteQ).then((res) => {
+            console.log('Removed db entries.');
             successHandler();
 
           }).catch(err => {
             failureHandler(err);
           });
-        }
-      });
+      }else{
+        console.log('Nothing to remove. Exiting.');
+        successHandler();      
+      }
 
     }).catch(err => {
       failureHandler(err);
@@ -300,17 +348,21 @@ exports.handler = (event, context, callback) => {
       handleAPIRequest(event, win, die);
     }else if(event.responsePayload){
       // this was triggered by the previous lambda
-      if(!event.responsePayload.state){
+      const reqState = event.responsePayload.state,
+            isInit = event.requestPayload.init;
+      if(!reqState){
         throw 'Missing state param!';
       }
-      if(event.requestPayload.init && event.responsePayload.state === 'none'){
+      if(isInit || reqState === 'none'){
         context.callbackWaitsForEmptyEventLoop = false;
         // special case to skip doing anything when this was triggered by the scraper init job
         console.log('init, exiting.');
         win();
+      }else{
+        console.log(`Checking for ${reqState}`);
+        return getAvailabilityData(reqState).then(data => sendNotifications(data, win, die)); 
       }
-      console.log(`Checking for ${event.responsePayload.state}`);
-      getAvailabilityData(event.responsePayload.state).then(data => sendNotifications(data, win, die));
+
     }else{
       throw 'Unknown trigger! I dunno how to handle this!';
     }
